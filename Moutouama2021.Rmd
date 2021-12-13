@@ -1,0 +1,417 @@
+---
+title: 'Nitrogen availability in soil mediates the effect of distance from climatic center on herbivory rate for a tropical plant '
+author: "Jacob K.Moutouama and Orou G. Gaoue "
+output: 
+  rmdformats::readthedown:
+    code_folding: show
+    self_contained: true
+    number_sections: true
+    thumbnails: true
+    lightbox: true
+    gallery: true
+    keep_md: true
+    highlight: tango
+    df_print: kable 
+    toc_depth: 3
+    fig_width: 8
+    fig_height: 8
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup,cache=TRUE,include=FALSE}
+library(knitr)
+opts_chunk$set(external = TRUE, echo = F, warning = FALSE, fig.pos = "H", autodep = TRUE, global.device = TRUE)
+a4width <- 8.3
+a4height <- 11.7
+options(knitr.table.format = "latex")
+```
+
+This document provides code to reproduce the analyses from:
+
+> Moutouama, J.K. and OG Gaoue. 2021. "Nitrogen availability in soil mediates the effect of distance from climatic center on herbivory rate for a tropical plant" _Biotropica_
+
+
+
+```{r eval=FALSE,echo=T}
+rm(list = ls())
+```
+
+# Path Diagramm
+
+```{r,eval=FALSE}
+knitr::include_graphics("SEM.png")
+```
+
+# Load required packages
+
+```{r}
+library(geosphere)
+library(sf)
+library(ntbox)
+library(raster)
+library(rgl)
+library(stringr)
+library(FactoMineR)
+library(stats)
+library(Taxonstand)
+# devtools::install_github("jinyizju/V.PhyloMaker")
+devtools::install_github("paul-buerkner/brms", build_vignettes = FALSE)
+library(V.PhyloMaker)
+library(ape)
+library(picante)
+library(brms)
+
+
+```
+
+# Geographic distance (the distance from each plot to the geographic center of all populations) 
+
+The calculation of the geographic distance was obtained from: 
+> Dallas, T., Decker, R. R., & Hastings, A. (2017). Species are not most abundant in the centre of their geographic range or climatic niche. Ecology Letters, 20(12), 1526–1533. https://doi.org/10.1111/ele.12860
+
+```{r,eval=FALSE}
+load("Thunbergiaplot.RData")
+Thunbergia<-Thunbergia[,3:4]
+# centroid(Thunbergia)
+Thunbergia_centroid<-rbind(Thunbergia,c(10.07482,1.692276))
+
+# Distance from the geographic center
+result <- data.frame(matrix(nrow = 55, ncol = 2))
+colnames(result) <- c("i", "distance")
+for (i in 1:55) {
+  dis<-distGeo(Thunbergia_centroid[i, ], Thunbergia_centroid[55, ])
+  result[i, 1] <- i
+  result[i,2]<-dis
+}
+
+#result
+
+# Data exportation
+# write.infile(result, "distance.center.csv", sep = ";")
+```
+
+
+# Climatic distance the distance from each plot to the preferendum of the species)
+
+
+The calculation of the climatic distance (here mahanalobis distance) was obtained from: 
+
+> Luis Osorio-Olvera, Lira-Noriega, A., Soberón, J., Peterson, A. T., Falconi, M., Contreras-Díaz, R. G., … Barve, N. (2020). ntbox: an R package with graphical user interface for modeling and evaluating multidimensional ecological niches. Methods in Ecology and Evolution, 1(1), 1–2. doi:10.1111/j.2041-210x.2010.00016.x.
+
+## Model calibration selection using Minimum Volume Ellipsoids (MVEs).
+
+```{r,results="hide",eval=FALSE}
+
+bioclim<-stack(list.files(
+                      pattern = ".tif$",
+                      full.names = T))
+plot(bioclim)
+
+```
+
+```{r,eval=FALSE}
+#  Spliting the occurrence data into train and test  using different random partition methods, but in our case. We took 80% for training and 20% for testing. 
+
+load("Thunbind.RData")
+set.seed(100)
+
+# Random sample indexes
+train_index <- sample(1:nrow(thunb), 0.8 * nrow(thunb))
+test_index <- setdiff(1:nrow(thunb), train_index)
+
+
+# Split ocurences data into train and test
+thunb_train <- thunb[train_index, ]
+thunb_test <- thunb[test_index, ]
+
+
+# Extraction of the environmental information for both train and test data
+
+thunb_etrain <- raster::extract(bioclim,thunb_train[,c("longitude", "latitude")],df=TRUE)
+thunb_etrain <- thunb_etrain[,-1]
+head(thunb_etrain)
+
+
+thunb_etest <- raster::extract(bioclim,thunb_test[,c("longitude","latitude")], df=TRUE)
+thunb_etest <- thunb_etest[,-1]
+#head(thunb_etest)
+```
+
+
+```{r,eval=FALSE}
+env_varsL <- ntbox::correlation_finder(cor(thunb_etrain),threshold = 0.8,verbose = F)
+env_vars <- env_varsL$descriptors
+print(env_vars )
+
+# Specification of the number of variables to fit the ellipsoid models. 
+
+nvarstest <- c(2,3)
+
+# Level
+level <- 0.99
+
+# This background data is just to compute the partial ROC test
+env_bg <- ntbox::sample_envbg(bioclim,10000)
+
+# For selecting the model we will use an arbitrary value of 6 percent of omission; it is not a rule but accepted omission rates are those bellow 10%. We will ask the function to return the partial ROC value (Peterson, Papes, and Soberon 2008)
+
+omr_criteria <- 0.06
+proc <- TRUE
+
+# Now we just need to use the function ellipsoid_selection to run the model calibration and selection protocol
+
+e_selct <- ntbox::ellipsoid_selection(env_train = thunb_etrain,
+                                      env_test = thunb_etest,
+                                      env_vars = env_vars,
+                                      level = level,
+                                      nvarstest = nvarstest,
+                                      env_bg = env_bg,
+                                      omr_criteria= omr_criteria,
+                                      proc = proc)
+
+
+# Let’s see the first 20 rows of the results
+# head(e_selct,20)
+
+
+# Displaying the model in the first row of the table
+# Best ellipsoid model for "omr_criteria" 
+bestvarcomb <- stringr::str_split(e_selct$fitted_vars,",")[[1]]
+
+
+# Ellipsoid model (environmental space)
+best_mod <- ntbox::cov_center(thunb_etrain[,bestvarcomb],
+                              mve = T,
+                              level = 0.99,
+                              vars = 1:length(bestvarcomb))
+
+# class(best_mod)
+```
+
+```{r,results='hide',eval=FALSE}
+# Projection model in geographic space
+mProj <- ntbox::ellipsoidfit(bioclim[[bestvarcomb]],
+                             centroid = best_mod$centroid,
+                             covar = best_mod$covariance,
+                             level = 0.99,size = 3)
+```
+
+```{r,eval=FALSE}
+# Estimation of the climatic distance at plot level
+thunb_plot<- Thunbergia
+thunb_plot<- raster::extract(bioclim,thunb_plot[,c("longitude","latitude")], df=TRUE)
+thunb_plot <- thunb_plot[,-1]
+
+mhd <- stats::mahalanobis(thunb_plot[,bestvarcomb],center = best_mod$centroid,cov = best_mod$covariance)
+
+distance<-data.frame(mhd)
+
+# Data exportation
+
+# write.infile(distance, "distance.climatic.center.csv", sep = ";")
+
+```
+
+# Getting phylogenetic tree  
+
+```{r,eval=FALSE}
+load("community.RData")
+speciesNames <- Thunbergia.richness[, 3]
+speciesNames <- gsub("\xca", "", speciesNames)
+resolved_names <- Taxonstand::TPL(speciesNames, corr = TRUE)
+str(resolved_names)
+splist <- data.frame()
+splist <- data.frame(paste(resolved_names$New.Genus, sep = "_", resolved_names$New.Species))
+splist[, 2] <- resolved_names$New.Genus
+splist[, 3] <- resolved_names$Family
+colnames(splist) <- c("species", "genus", "family")
+species_final <- splist[, 1]
+splist[splist == ""] <- NA
+splist <- na.omit(splist)
+splist <- unique(splist)
+tree.thunbergia <- phylo.maker(sp.list = splist, tree = GBOTB.extended, nodes = nodes.info.1, scenarios = "S3")
+
+# write.tree(tree.thunbergia$scenario.3, "Thunbergia.tre")
+```
+
+# Phylogenetic  diversity 
+
+```{r,eval=FALSE}
+# Create data with species abundance 
+dat <- data.frame(Plot = Thunbergia.richness[, 2], species = species_final, abundance = Thunbergia.richness[, 4])
+dat <- dat[complete.cases(dat), ]
+str(dat)
+spp <- levels(dat$species)
+plots <- levels(dat$Plot)
+sppmat <- matrix(0, nrow = length(plots), ncol = length(spp))
+dimnames(sppmat) <- list(plots, spp)
+for (k in 1:nrow(dat)) {
+  i <- which(dat$Plot[k] == rownames(sppmat))
+  j <- which(dat$species[k] == colnames(sppmat))
+  sppmat[i, j] <- dat$abundance[k]
+}
+```
+
+## Phylogeny tree matching with community data
+
+```{r,eval=FALSE}
+phy <- tree.thunbergia$scenario.3
+Thunbergia.cleanTree <- drop.tip(
+  phy = phy,
+  tip = setdiff(
+    phy$tip.label,
+    colnames(sppmat)
+  )
+)
+Thunbergia.picCleanTree <- match.phylo.comm(phy = phy, comm = sppmat)$phy
+
+Thunbergia.picCleanComm <- match.phylo.comm(phy = phy, comm = sppmat)$comm
+```
+
+
+
+## Phylogeny species variation (PSV)
+
+```{r,eval=FALSE}
+PSV <- psv(Thunbergia.picCleanComm, Thunbergia.picCleanTree, compute.var = TRUE)
+PSV <- as.data.frame(PSV)
+```
+
+
+# Bayesian Structural equation model (SEM)
+
+```{r,results="hide"}
+load("/Users/jmoutouama/Dropbox/PhD Project/Chapter2/Herbivory/Phylogeny and herbivory/Manusccript/Biotropica/Data/metadata.RData")
+Thunbergiafinal<-data.frame(Thunbergia.metadata,PSV)
+summary(Thunbergiafinal)
+zThunbergiafinal <- scale(Thunbergiafinal[, 4:13])
+zThunbergiafinal <- data.frame(Thunbergiafinal[, 1:3], zThunbergiafinal)
+summary(zThunbergiafinal)
+```
+
+##  Model with random effect of Population (distance from geographic center)
+
+```{r}
+mod_Soil_moist_pop <- bf(Soil.moisture ~ Distance.center + (1 | Population)) + gaussian()
+mod_Soil_N_pop <- bf(N ~ Distance.center + (1 | Population)) + gaussian()
+mod_Soil_P_pop <- bf(P ~ Distance.center + (1 | Population)) + gaussian()
+mod_Soil_K_pop <- bf(K ~ Distance.center + (1 | Population)) + gaussian()
+mod_Soil_pH_pop <- bf(pH ~ Distance.center + (1 | Population)) + gaussian()
+mod_PAR_pop <- bf(PAR ~ Distance.center + (1 | Population)) + gaussian()
+mod_PSV_pop <- bf(PSV ~ N + K + P + SRU + pH + PAR + Soil.moisture + Distance.center + (1 | Population)) + gaussian()
+mod_Comp_pop <- bf(SRU ~ N + K + P + pH + PAR + Soil.moisture + Distance.center + (1 | Population)) + gaussian()
+mod_herb_pop <- bf(Herbivory ~ SRU + PSV + N + K + P + pH + PAR + Soil.moisture + Distance.center + (1 | Population)) + Beta()
+```
+
+
+```{r}
+library(brms)
+SEM_brms_pop_PSV <- brm(mod_Soil_moist_pop +
+  mod_Soil_N_pop +
+  mod_Soil_P_pop +
+  mod_Soil_K_pop +
+  mod_Soil_pH_pop +
+  mod_PAR_pop +
+  mod_PSV_pop +
+  mod_Comp_pop +
+  mod_herb_pop +
+  set_rescor(FALSE),
+data = zThunbergiafinal,
+seed = 13,
+iter = 10000,
+warmup = 1000,
+cores = 3, chains = 2,
+control = list(adapt_delta = 0.98)
+)
+```
+
+```{r}
+fit_SEM_brms_pop_PSV <- add_criterion(SEM_brms_pop_PSV, "loo")
+summary(fit_SEM_brms_pop_PSV)
+```
+
+### Trace plot
+```{r}
+plot(SEM_brms_pop_PSV, ask = FALSE)
+```
+
+
+
+### Posterior 
+
+```{r}
+posterior_SEM_pop_PSV <- posterior_summary(fit_SEM_brms_pop_PSV, pars = c("^b_", "^sd_"))
+knitr::kable(posterior_SEM_pop_PSV, digits = 3)
+```
+
+
+
+##  Model with random effect of Population (distance from climatic center)
+
+
+```{r}
+library(brms)
+mod_Soil_moist_pop_cd<-bf(Soil.moisture ~ mhd + (1|Population)) + gaussian()
+mod_Soil_N_pop_cd<-bf(N ~ mhd + (1|Population)) + gaussian()
+mod_Soil_P_pop_cd<-bf(P ~ mhd + (1|Population)) + gaussian()
+mod_Soil_K_pop_cd<-bf(K ~ mhd + (1|Population)) + gaussian()
+mod_Soil_pH_pop_cd<-bf(pH ~ mhd + ( 1|Population)) + gaussian()
+mod_PAR_pop_cd<-bf(PAR ~ mhd + (1|Population)) + gaussian()
+mod_PSV_pop_cd<-bf(PSV ~ N + K +P+ SRU+ pH + PAR + Soil.moisture + mhd + (1|Population)) + gaussian()
+mod_Comp_pop_cd<-bf(SRU ~  N + K + P+ pH + PAR + Soil.moisture + mhd + (1|Population)) + gaussian()
+mod_herb_pop_cd<-bf(Herbivory  ~ SRU + PSV + N + K +P+ pH + PAR + Soil.moisture + mhd + (1|Population)) + Beta()
+```
+
+
+```{r}
+library(brms)
+SEM_brms_pop_mhd_PSV <- brm(mod_Soil_moist_pop_cd +
+  mod_Soil_N_pop_cd +
+  mod_Soil_P_pop_cd +
+  mod_Soil_K_pop_cd +
+  mod_Soil_pH_pop_cd +
+  mod_PAR_pop_cd +
+  mod_PSV_pop_cd +
+  mod_Comp_pop_cd +
+  mod_herb_pop_cd +
+  set_rescor(FALSE),
+data = zThunbergiafinal,
+seed = 13,
+iter = 10000,
+warmup = 1000,
+cores = 3, chains = 2,
+control = list(adapt_delta = 0.998, max_treedepth = 15)
+)
+```
+
+```{r}
+library(brms)
+fit_SEM_brms_pop_mhd_PSV <- add_criterion(SEM_brms_pop_mhd_PSV, "loo")
+summary(SEM_brms_pop_mhd_PSV,digit=3)
+```
+
+### Trace plot
+```{r}
+plot(SEM_brms_pop_mhd_PSV, ask = FALSE)
+```
+
+
+### Posterior 
+
+```{r}
+
+posterior_SEM_pop_mhd_PSV <- posterior_summary(SEM_brms_pop_mhd_PSV, pars = c("^b_", "^sd_"))
+knitr::kable(posterior_SEM_pop_mhd_PSV, digits = 3)
+```
+
+#  Difference in Herbivory rate  between insect species.
+```{r}
+herbovoryglm<-read.csv("/Users/jmoutouama/Documents/Grad School/Paper PD Herbivory rate/Thunbergia /Data/Herbivoryglm.csv", header=T)
+herbovoryglm<-herbovoryglm[complete.cases(herbovoryglm), ]
+herbovoryglm<-subset(herbovoryglm, Herbivory.rate > 0, select = c(ID, Herbivory.rate,species))
+summary(herbovoryglm)
+mod<-glmmTMB::glmmTMB (Herbivory.rate~species+(1|ID),data =herbovoryglm,family = list(family="beta",link="logit"))
+summary(mod)
+```
+
